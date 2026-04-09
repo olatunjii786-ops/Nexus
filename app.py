@@ -11,8 +11,8 @@ app.secret_key = secrets.token_hex(16)
 CORS(app)
 
 # === CLOUDFLARE CONFIG ===
-ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "your_account_id_here")
-API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "your_api_token_here")
+ACCOUNT_ID = os.environ.get("3b47d77187e9b7d74d32138e102eb38f")
+API_TOKEN = os.environ.get("cfut_J8yfIf5TeWqIHAj4PDXIQI2rCYUwjlDeVKyajHpZ33f4f07f")
 
 MODEL_CHAT_PRIMARY = "@cf/meta/llama-3.1-8b-instruct"
 MODEL_CHAT_CODE = "@cf/mistral/mistral-7b-instruct-v0.1"
