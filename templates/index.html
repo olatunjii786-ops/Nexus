@@ -4,6 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>NEXUS AI</title>
+    <!-- Prism.js for syntax highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-java.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-c.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-cpp.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -100,6 +108,54 @@
         .message { margin-bottom: 15px; word-wrap: break-word; }
         .user { color: #00b4ff; }
         .nexus { color: #00ff41; }
+        
+        /* Code block styling */
+        .code-block-wrapper {
+            position: relative;
+            margin: 10px 0;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .code-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #2d2d2d;
+            padding: 8px 12px;
+            border-bottom: 1px solid #444;
+        }
+        .code-lang {
+            color: #888;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+        .copy-btn {
+            background: #3a3a3a;
+            color: #00ff41;
+            border: 1px solid #555;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .copy-btn:hover {
+            background: #00ff41;
+            color: #0a0a0a;
+        }
+        .copy-btn.copied {
+            background: #00cc34;
+            color: #0a0a0a;
+        }
+        pre {
+            margin: 0 !important;
+            border-radius: 0 0 8px 8px !important;
+        }
+        code {
+            font-family: 'Courier New', monospace !important;
+            font-size: 13px !important;
+        }
+        
         .input-area {
             display: flex;
             gap: 8px;
@@ -215,6 +271,55 @@
         const chatList = document.getElementById('chat-list');
         const sidebar = document.getElementById('sidebar');
 
+        // Format message with code blocks
+        function formatMessage(text) {
+            // Detect code blocks with triple backticks
+            const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+            let formatted = text;
+            let match;
+            
+            while ((match = codeBlockRegex.exec(text)) !== null) {
+                const lang = match[1] || 'python';
+                const code = match[2].trim();
+                const blockId = 'code-' + Date.now() + '-' + Math.random().toString(36);
+                
+                const codeBlockHtml = `
+                    <div class="code-block-wrapper">
+                        <div class="code-header">
+                            <span class="code-lang">${lang}</span>
+                            <button class="copy-btn" onclick="copyCode('${blockId}')">📋 Copy</button>
+                        </div>
+                        <pre><code id="${blockId}" class="language-${lang}">${escapeHtml(code)}</code></pre>
+                    </div>
+                `;
+                
+                formatted = formatted.replace(match[0], codeBlockHtml);
+            }
+            
+            return formatted;
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        function copyCode(blockId) {
+            const codeBlock = document.getElementById(blockId);
+            const code = codeBlock.textContent;
+            
+            navigator.clipboard.writeText(code).then(() => {
+                const btn = codeBlock.closest('.code-block-wrapper').querySelector('.copy-btn');
+                btn.textContent = '✅ Copied!';
+                btn.classList.add('copied');
+                setTimeout(() => {
+                    btn.textContent = '📋 Copy';
+                    btn.classList.remove('copied');
+                }, 2000);
+            });
+        }
+
         function saveConversationToPhone(convId, messages, title) {
             const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
             data[convId] = {
@@ -312,9 +417,16 @@
                 div.id = 'typing-indicator';
                 div.innerHTML = '<span class="typing">' + text + '</span>';
             } else {
-                div.textContent = role.toUpperCase() + ': ' + text;
+                const formattedText = formatMessage(text);
+                div.innerHTML = role.toUpperCase() + ': ' + formattedText;
             }
             chatContainer.appendChild(div);
+            
+            // Apply syntax highlighting to any code blocks
+            if (!isTyping) {
+                Prism.highlightAllUnder(div);
+            }
+            
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
 
@@ -454,4 +566,4 @@
         renderChatList();
     </script>
 </body>
-  </html>
+</html>
