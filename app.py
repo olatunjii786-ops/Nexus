@@ -11,8 +11,13 @@ app.secret_key = secrets.token_hex(16)
 CORS(app)
 
 # === CLOUDFLARE CONFIG ===
-ACCOUNT_ID = os.environ.get("3b47d77187e9b7d74d32138e102eb38f")
-API_TOKEN = os.environ.get("cfut_J8yfIf5TeWqIHAj4PDXIQI2rCYUwjlDeVKyajHpZ33f4f07f")
+# These will be set in Render environment variables
+ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
+
+# Validate credentials on startup
+if not ACCOUNT_ID or not API_TOKEN:
+    print("⚠️ WARNING: CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN not set!")
 
 MODEL_CHAT_PRIMARY = "@cf/meta/llama-3.1-8b-instruct"
 MODEL_CHAT_CODE = "@cf/mistral/mistral-7b-instruct-v0.1"
@@ -60,6 +65,8 @@ def call_cloudflare_chat(messages, use_code_model=False):
                     time.sleep(2 * (attempt + 1))
                     continue
                 return "[RATE LIMITED] Try again in 30 seconds."
+            else:
+                return f"[API ERROR {response.status_code}]"
         except Exception as e:
             if attempt < 2:
                 time.sleep(1)
@@ -103,11 +110,30 @@ def home():
         with open('templates/index.html', 'r') as f:
             html_content = f.read()
     except:
-        html_content = "<h1>NEXUS AI</h1><p>UI template missing. Check templates/index.html</p>"
+        html_content = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>NEXUS AI</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body { background: #0a0a0a; color: #00ff41; font-family: monospace; padding: 20px; }
+                h1 { color: #00ff41; }
+            </style>
+        </head>
+        <body>
+            <h1>⚡ NEXUS AI</h1>
+            <p>Backend is live. Deploy the frontend template to use the full UI.</p>
+        </body>
+        </html>
+        """
     return render_template_string(html_content)
 
 @app.route('/chat', methods=['POST'])
 def chat():
+    if not ACCOUNT_ID or not API_TOKEN:
+        return jsonify({"error": "Server not configured with API credentials"}), 500
+    
     data = request.get_json()
     if not data:
         return jsonify({"error": "No JSON payload"}), 400
@@ -134,6 +160,9 @@ def chat():
 
 @app.route('/vision', methods=['POST'])
 def vision():
+    if not ACCOUNT_ID or not API_TOKEN:
+        return jsonify({"error": "Server not configured with API credentials"}), 500
+    
     data = request.get_json()
     if not data:
         return jsonify({"error": "No JSON payload"}), 400
@@ -152,6 +181,9 @@ def vision():
 
 @app.route('/generate', methods=['POST'])
 def generate_image():
+    if not ACCOUNT_ID or not API_TOKEN:
+        return jsonify({"error": "Server not configured with API credentials"}), 500
+    
     data = request.get_json()
     if not data:
         return jsonify({"error": "No JSON payload"}), 400
@@ -180,7 +212,11 @@ def generate_image():
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({"status": "healthy", "timestamp": time.time()})
+    return jsonify({
+        "status": "healthy",
+        "credentials_configured": bool(ACCOUNT_ID and API_TOKEN),
+        "timestamp": time.time()
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
