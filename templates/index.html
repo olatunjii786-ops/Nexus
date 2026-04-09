@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NEXUS AI</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: #0a0a0a;
+            color: #e0e0e0;
+            font-family: 'Courier New', monospace;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding: 12px;
+        }
+        .header {
+            border-bottom: 2px solid #00ff41;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        h1 { color: #00ff41; font-size: 1.5rem; }
+        .badge {
+            background: #1a1a1a;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            color: #888;
+        }
+        .main-container {
+            display: flex;
+            flex: 1;
+            gap: 10px;
+            overflow: hidden;
+        }
+        .sidebar {
+            width: 200px;
+            background: #111;
+            border-radius: 8px;
+            border: 1px solid #333;
+            padding: 10px;
+            overflow-y: auto;
+            display: none;
+        }
+        .sidebar.active { display: block; }
+        .sidebar h3 {
+            color: #00ff41;
+            font-size: 0.9rem;
+            margin-bottom: 10px;
+        }
+        .chat-list { list-style: none; }
+        .chat-item {
+            padding: 8px;
+            margin-bottom: 5px;
+            background: #1a1a1a;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .chat-item:hover { background: #2a2a2a; }
+        .chat-item.active { border-left: 3px solid #00ff41; }
+        .delete-chat {
+            color: #ff4444;
+            cursor: pointer;
+            padding: 0 5px;
+        }
+        .new-chat-btn {
+            width: 100%;
+            padding: 10px;
+            background: #00ff41;
+            color: #0a0a0a;
+            border: none;
+            border-radius: 5px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            cursor: pointer;
+        }
+        .chat-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        #chat-container {
+            flex: 1;
+            overflow-y: auto;
+            background: #111;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            margin-bottom: 12px;
+        }
+        .message { margin-bottom: 15px; word-wrap: break-word; }
+        .user { color: #00b4ff; }
+        .nexus { color: #00ff41; }
+        .input-area {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        #user-input {
+            flex: 1;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            color: white;
+            padding: 14px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-family: inherit;
+        }
+        button {
+            background: #00ff41;
+            color: #0a0a0a;
+            border: none;
+            padding: 0 20px;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 14px;
+        }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .action-bar {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+        .action-btn {
+            background: #1a1a1a;
+            color: #00ff41;
+            border: 1px solid #333;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .typing { color: #666; font-style: italic; }
+        #image-preview {
+            max-width: 100%;
+            max-height: 200px;
+            margin: 10px 0;
+            border-radius: 8px;
+            display: none;
+        }
+        .mode-indicator {
+            font-size: 11px;
+            color: #666;
+            margin-right: 10px;
+        }
+        .menu-toggle {
+            background: none;
+            border: 1px solid #333;
+            color: #00ff41;
+            padding: 5px 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div style="display: flex; align-items: center;">
+            <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
+            <h1 style="margin-left: 10px;">⚡ NEXUS</h1>
+            <span class="mode-indicator" id="mode-indicator"></span>
+        </div>
+        <span class="badge">📱 Built from Phone</span>
+    </div>
+    
+    <div class="main-container">
+        <div class="sidebar" id="sidebar">
+            <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
+            <h3>📁 Saved Chats</h3>
+            <ul class="chat-list" id="chat-list"></ul>
+        </div>
+        
+        <div class="chat-area">
+            <div id="chat-container">
+                <div class="message nexus">NEXUS: Yo. I'm live. What do you need?</div>
+            </div>
+            
+            <img id="image-preview" alt="Preview">
+            
+            <div class="input-area">
+                <input type="text" id="user-input" placeholder="Ask anything..." autocomplete="off">
+                <button id="send-btn" onclick="sendMessage()">➤</button>
+            </div>
+            
+            <div class="action-bar">
+                <button class="action-btn" onclick="newChat()">🔄 New</button>
+                <button class="action-btn" onclick="document.getElementById('image-upload').click()">📷 Upload</button>
+                <button class="action-btn" onclick="generateImage()">🎨 Generate</button>
+            </div>
+        </div>
+    </div>
+    
+    <input type="file" id="image-upload" accept="image/*" style="display: none;" onchange="handleImageUpload(this)">
+
+    <script>
+        const STORAGE_KEY = 'nexus_conversations';
+        let currentConversationId = null;
+        let currentMessages = [];
+        let pendingImage = null;
+        
+        const chatContainer = document.getElementById('chat-container');
+        const userInput = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+        const modeIndicator = document.getElementById('mode-indicator');
+        const imagePreview = document.getElementById('image-preview');
+        const chatList = document.getElementById('chat-list');
+        const sidebar = document.getElementById('sidebar');
+
+        function saveConversationToPhone(convId, messages, title) {
+            const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+            data[convId] = {
+                id: convId,
+                title: title || 'New Chat',
+                messages: messages,
+                updatedAt: new Date().toISOString()
+            };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+            renderChatList();
+        }
+
+        function loadAllConversationsFromPhone() {
+            return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+        }
+
+        function loadConversationFromPhone(convId) {
+            const data = loadAllConversationsFromPhone();
+            return data[convId] || null;
+        }
+
+        function deleteConversationFromPhone(convId) {
+            const data = loadAllConversationsFromPhone();
+            delete data[convId];
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+            renderChatList();
+        }
+
+        function generateConversationId() {
+            return Date.now().toString(36) + Math.random().toString(36).substr(2);
+        }
+
+        function toggleSidebar() {
+            sidebar.classList.toggle('active');
+        }
+
+        function renderChatList() {
+            const data = loadAllConversationsFromPhone();
+            const convs = Object.values(data).sort((a, b) => 
+                new Date(b.updatedAt) - new Date(a.updatedAt)
+            );
+            
+            chatList.innerHTML = '';
+            convs.forEach(conv => {
+                const li = document.createElement('li');
+                li.className = 'chat-item' + (conv.id === currentConversationId ? ' active' : '');
+                li.innerHTML = `
+                    <span onclick="loadChat('${conv.id}')" style="flex:1;">${conv.title}</span>
+                    <span class="delete-chat" onclick="event.stopPropagation(); deleteChat('${conv.id}')">✕</span>
+                `;
+                chatList.appendChild(li);
+            });
+        }
+
+        function loadChat(convId) {
+            const conv = loadConversationFromPhone(convId);
+            if (!conv) return;
+            
+            currentConversationId = convId;
+            currentMessages = conv.messages;
+            
+            chatContainer.innerHTML = '';
+            conv.messages.forEach(msg => {
+                if (msg.role !== 'system') {
+                    addMessageToUI(msg.role, msg.content);
+                }
+            });
+            
+            renderChatList();
+            sidebar.classList.remove('active');
+        }
+
+        function deleteChat(convId) {
+            if (confirm('Delete this chat?')) {
+                deleteConversationFromPhone(convId);
+                if (currentConversationId === convId) {
+                    newChat();
+                }
+            }
+        }
+
+        function newChat() {
+            currentConversationId = generateConversationId();
+            currentMessages = [];
+            chatContainer.innerHTML = '<div class="message nexus">NEXUS: Yo. I\'m live. What do you need?</div>';
+            modeIndicator.textContent = '';
+            renderChatList();
+            sidebar.classList.remove('active');
+        }
+
+        function addMessageToUI(role, text, isTyping = false) {
+            const div = document.createElement('div');
+            div.className = 'message ' + role;
+            if (isTyping) {
+                div.id = 'typing-indicator';
+                div.innerHTML = '<span class="typing">' + text + '</span>';
+            } else {
+                div.textContent = role.toUpperCase() + ': ' + text;
+            }
+            chatContainer.appendChild(div);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function removeTypingIndicator() {
+            const indicator = document.getElementById('typing-indicator');
+            if (indicator) indicator.remove();
+        }
+
+        userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        async function sendMessage() {
+            const message = userInput.value.trim();
+            if (!message && !pendingImage) return;
+            
+            const displayMessage = message || "[Image uploaded]";
+            addMessageToUI('user', displayMessage);
+            
+            if (!pendingImage) {
+                currentMessages.push({role: 'user', content: message});
+            }
+            
+            if (pendingImage) {
+                addMessageToUI('nexus', '...analyzing...', true);
+                sendBtn.disabled = true;
+                
+                try {
+                    const response = await fetch('/vision', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            image: pendingImage, 
+                            prompt: message || "What's in this image?"
+                        })
+                    });
+                    const data = await response.json();
+                    removeTypingIndicator();
+                    addMessageToUI('nexus', data.description);
+                    
+                    currentMessages.push({role: 'user', content: '[Image] ' + (message || 'Analyze')});
+                    currentMessages.push({role: 'assistant', content: data.description});
+                    
+                    modeIndicator.textContent = '👁️ Vision';
+                    
+                    const title = currentMessages[0]?.content?.slice(0, 30) || 'New Chat';
+                    saveConversationToPhone(currentConversationId, currentMessages, title);
+                } catch (e) {
+                    removeTypingIndicator();
+                    addMessageToUI('nexus', '[ERROR] ' + e.message);
+                }
+                
+                pendingImage = null;
+                imagePreview.style.display = 'none';
+                sendBtn.disabled = false;
+            } else {
+                addMessageToUI('nexus', '...thinking...', true);
+                sendBtn.disabled = true;
+                
+                try {
+                    const response = await fetch('/chat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            message: message,
+                            history: currentMessages
+                        })
+                    });
+                    const data = await response.json();
+                    removeTypingIndicator();
+                    addMessageToUI('nexus', data.reply);
+                    
+                    currentMessages.push({role: 'assistant', content: data.reply});
+                    
+                    modeIndicator.textContent = data.coding_mode ? '💻 Code' : '💬 Chat';
+                    
+                    const title = currentMessages[0]?.content?.slice(0, 30) || 'New Chat';
+                    saveConversationToPhone(currentConversationId, currentMessages, title);
+                } catch (e) {
+                    removeTypingIndicator();
+                    addMessageToUI('nexus', '[ERROR] ' + e.message);
+                }
+                sendBtn.disabled = false;
+            }
+            
+            userInput.value = '';
+        }
+
+        function handleImageUpload(input) {
+            const file = input.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                pendingImage = e.target.result.split(',')[1];
+                imagePreview.src = e.target.result;
+                imagePreview.style.display = 'block';
+                userInput.placeholder = 'Ask about this image...';
+            };
+            reader.readAsDataURL(file);
+        }
+
+        async function generateImage() {
+            const prompt = prompt('Enter image description:');
+            if (!prompt) return;
+            
+            addMessageToUI('user', '[Generate]: ' + prompt);
+            addMessageToUI('nexus', '...generating...', true);
+            
+            try {
+                const response = await fetch('/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: prompt })
+                });
+                const data = await response.json();
+                removeTypingIndicator();
+                
+                if (data.success) {
+                    addMessageToUI('nexus', 'Generated: ' + prompt);
+                    chatContainer.innerHTML += '<img src="data:image/png;base64,' + data.image_base64 + '" style="max-width:100%; border-radius:8px; margin-top:10px;">';
+                    
+                    currentMessages.push({role: 'user', content: '[Generate] ' + prompt});
+                    currentMessages.push({role: 'assistant', content: '[Image] ' + prompt});
+                    saveConversationToPhone(currentConversationId, currentMessages, currentMessages[0]?.content?.slice(0, 30) || 'New Chat');
+                } else {
+                    addMessageToUI('nexus', '[FAILED] ' + data.error);
+                }
+                modeIndicator.textContent = '🎨 Image';
+            } catch (e) {
+                removeTypingIndicator();
+                addMessageToUI('nexus', '[ERROR] Generation failed');
+            }
+        }
+
+        newChat();
+        renderChatList();
+    </script>
+</body>
+  </html>
