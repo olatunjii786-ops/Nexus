@@ -12,6 +12,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-java.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-c.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-cpp.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-markup.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -46,7 +47,7 @@
             overflow: hidden;
         }
         .sidebar {
-            width: 200px;
+            width: 220px;
             background: #111;
             border-radius: 8px;
             border: 1px solid #333;
@@ -187,6 +188,7 @@
             display: flex;
             gap: 8px;
             justify-content: flex-end;
+            flex-wrap: wrap;
         }
         .action-btn {
             background: #1a1a1a;
@@ -196,6 +198,9 @@
             border-radius: 20px;
             font-size: 12px;
             cursor: pointer;
+        }
+        .action-btn:hover {
+            background: #2a2a2a;
         }
         .typing { color: #666; font-style: italic; }
         #image-preview {
@@ -216,6 +221,65 @@
             color: #00ff41;
             padding: 5px 10px;
         }
+        
+        /* Modal for image generation prompt */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal.active { display: flex; }
+        .modal-content {
+            background: #1a1a1a;
+            border: 1px solid #00ff41;
+            border-radius: 12px;
+            padding: 20px;
+            width: 90%;
+            max-width: 400px;
+        }
+        .modal-content h3 {
+            color: #00ff41;
+            margin-bottom: 15px;
+        }
+        .modal-content input {
+            width: 100%;
+            background: #0a0a0a;
+            border: 1px solid #333;
+            color: white;
+            padding: 14px;
+            border-radius: 8px;
+            font-size: 14px;
+            margin-bottom: 15px;
+            font-family: inherit;
+        }
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+        .modal-actions button {
+            padding: 10px 20px;
+        }
+        .cancel-btn {
+            background: #333;
+            color: #e0e0e0;
+        }
+        
+        /* Retry button animation */
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .retry-spinner {
+            animation: spin 1s linear infinite;
+        }
     </style>
 </head>
 <body>
@@ -225,7 +289,7 @@
             <h1 style="margin-left: 10px;">⚡ NEXUS</h1>
             <span class="mode-indicator" id="mode-indicator"></span>
         </div>
-        <span class="badge">📱 Built from Phone</span>
+        <span class="badge">📱 Built by INIESTA | 🇳🇬 Nigeria</span>
     </div>
     
     <div class="main-container">
@@ -249,8 +313,22 @@
             
             <div class="action-bar">
                 <button class="action-btn" onclick="newChat()">🔄 New</button>
+                <button class="action-btn" onclick="retryLastMessage()">↻ Retry</button>
                 <button class="action-btn" onclick="document.getElementById('image-upload').click()">📷 Upload</button>
-                <button class="action-btn" onclick="generateImage()">🎨 Generate</button>
+                <button class="action-btn" onclick="openGenerateModal()">🎨 Generate</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Image Generation Modal -->
+    <div class="modal" id="generate-modal">
+        <div class="modal-content">
+            <h3>🎨 Generate Image</h3>
+            <input type="text" id="gen-prompt" placeholder="Describe the image...">
+            <input type="text" id="gen-negative" placeholder="Negative prompt (optional)">
+            <div class="modal-actions">
+                <button class="cancel-btn" onclick="closeGenerateModal()">Cancel</button>
+                <button onclick="generateImage()">Generate</button>
             </div>
         </div>
     </div>
@@ -262,6 +340,7 @@
         let currentConversationId = null;
         let currentMessages = [];
         let pendingImage = null;
+        let isGenerating = false;
         
         const chatContainer = document.getElementById('chat-container');
         const userInput = document.getElementById('user-input');
@@ -270,10 +349,10 @@
         const imagePreview = document.getElementById('image-preview');
         const chatList = document.getElementById('chat-list');
         const sidebar = document.getElementById('sidebar');
+        const generateModal = document.getElementById('generate-modal');
 
         // Format message with code blocks
         function formatMessage(text) {
-            // Detect code blocks with triple backticks
             const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
             let formatted = text;
             let match;
@@ -408,6 +487,9 @@
             modeIndicator.textContent = '';
             renderChatList();
             sidebar.classList.remove('active');
+            pendingImage = null;
+            imagePreview.style.display = 'none';
+            userInput.placeholder = 'Ask anything...';
         }
 
         function addMessageToUI(role, text, isTyping = false) {
@@ -422,7 +504,6 @@
             }
             chatContainer.appendChild(div);
             
-            // Apply syntax highlighting to any code blocks
             if (!isTyping) {
                 Prism.highlightAllUnder(div);
             }
@@ -451,7 +532,7 @@
             }
             
             if (pendingImage) {
-                addMessageToUI('nexus', '...analyzing...', true);
+                addMessageToUI('nexus', '...analyzing image...', true);
                 sendBtn.disabled = true;
                 
                 try {
@@ -460,14 +541,14 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ 
                             image: pendingImage, 
-                            prompt: message || "What's in this image?"
+                            prompt: message || "What's in this image? Describe it in detail."
                         })
                     });
                     const data = await response.json();
                     removeTypingIndicator();
                     addMessageToUI('nexus', data.description);
                     
-                    currentMessages.push({role: 'user', content: '[Image] ' + (message || 'Analyze')});
+                    currentMessages.push({role: 'user', content: '[Image] ' + (message || 'Analyze this')});
                     currentMessages.push({role: 'assistant', content: data.description});
                     
                     modeIndicator.textContent = '👁️ Vision';
@@ -476,11 +557,12 @@
                     saveConversationToPhone(currentConversationId, currentMessages, title);
                 } catch (e) {
                     removeTypingIndicator();
-                    addMessageToUI('nexus', '[ERROR] ' + e.message);
+                    addMessageToUI('nexus', '[ERROR] Vision failed: ' + e.message);
                 }
                 
                 pendingImage = null;
                 imagePreview.style.display = 'none';
+                userInput.placeholder = 'Ask anything...';
                 sendBtn.disabled = false;
             } else {
                 addMessageToUI('nexus', '...thinking...', true);
@@ -515,53 +597,162 @@
             userInput.value = '';
         }
 
+        async function retryLastMessage() {
+            if (currentMessages.length < 2) return;
+            
+            // Find the last user message
+            let lastUserIndex = -1;
+            for (let i = currentMessages.length - 1; i >= 0; i--) {
+                if (currentMessages[i].role === 'user') {
+                    lastUserIndex = i;
+                    break;
+                }
+            }
+            
+            if (lastUserIndex === -1) return;
+            
+            const lastUserMessage = currentMessages[lastUserIndex];
+            
+            // Remove all messages after the last user message
+            currentMessages = currentMessages.slice(0, lastUserIndex + 1);
+            
+            // Remove from UI
+            const messages = chatContainer.children;
+            for (let i = messages.length - 1; i >= 0; i--) {
+                const msg = messages[i];
+                if (msg.classList.contains('nexus') && !msg.id) {
+                    msg.remove();
+                }
+            }
+            
+            addMessageToUI('nexus', '...retrying...', true);
+            sendBtn.disabled = true;
+            
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        message: lastUserMessage.content,
+                        history: currentMessages.slice(0, -1)
+                    })
+                });
+                const data = await response.json();
+                removeTypingIndicator();
+                addMessageToUI('nexus', data.reply);
+                
+                currentMessages.push({role: 'assistant', content: data.reply});
+                
+                const title = currentMessages[0]?.content?.slice(0, 30) || 'New Chat';
+                saveConversationToPhone(currentConversationId, currentMessages, title);
+            } catch (e) {
+                removeTypingIndicator();
+                addMessageToUI('nexus', '[ERROR] Retry failed: ' + e.message);
+            }
+            sendBtn.disabled = false;
+        }
+
         function handleImageUpload(input) {
             const file = input.files[0];
             if (!file) return;
+            
+            // Check file size (max 2MB)
+            if (file.size > 2 * 1024 * 1024) {
+                alert('Image too large. Please select an image under 2MB.');
+                input.value = '';
+                return;
+            }
             
             const reader = new FileReader();
             reader.onload = (e) => {
                 pendingImage = e.target.result.split(',')[1];
                 imagePreview.src = e.target.result;
                 imagePreview.style.display = 'block';
-                userInput.placeholder = 'Ask about this image...';
+                userInput.placeholder = 'Ask about this image (optional)...';
             };
             reader.readAsDataURL(file);
+            input.value = '';
+        }
+
+        function openGenerateModal() {
+            generateModal.classList.add('active');
+            document.getElementById('gen-prompt').focus();
+        }
+
+        function closeGenerateModal() {
+            generateModal.classList.remove('active');
+            document.getElementById('gen-prompt').value = '';
+            document.getElementById('gen-negative').value = '';
         }
 
         async function generateImage() {
-            const prompt = prompt('Enter image description:');
-            if (!prompt) return;
+            const prompt = document.getElementById('gen-prompt').value.trim();
+            const negativePrompt = document.getElementById('gen-negative').value.trim();
+            
+            if (!prompt) {
+                alert('Please enter a description');
+                return;
+            }
+            
+            closeGenerateModal();
             
             addMessageToUI('user', '[Generate]: ' + prompt);
-            addMessageToUI('nexus', '...generating...', true);
+            addMessageToUI('nexus', '...generating image...', true);
+            modeIndicator.textContent = '🎨 Generating';
             
             try {
                 const response = await fetch('/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt: prompt })
+                    body: JSON.stringify({ 
+                        prompt: prompt,
+                        negative_prompt: negativePrompt
+                    })
                 });
                 const data = await response.json();
                 removeTypingIndicator();
                 
                 if (data.success) {
-                    addMessageToUI('nexus', 'Generated: ' + prompt);
-                    chatContainer.innerHTML += '<img src="data:image/png;base64,' + data.image_base64 + '" style="max-width:100%; border-radius:8px; margin-top:10px;">';
+                    addMessageToUI('nexus', '✅ Generated: ' + prompt);
+                    const sourceText = data.source ? ` (via ${data.source})` : '';
+                    chatContainer.innerHTML += `
+                        <div style="margin: 10px 0;">
+                            <img src="data:image/png;base64,${data.image_base64}" style="max-width:100%; border-radius:8px; border:1px solid #333;">
+                            <div style="font-size:11px; color:#666; margin-top:5px;">Generated image${sourceText}</div>
+                        </div>
+                    `;
                     
                     currentMessages.push({role: 'user', content: '[Generate] ' + prompt});
-                    currentMessages.push({role: 'assistant', content: '[Image] ' + prompt});
+                    currentMessages.push({role: 'assistant', content: '[Image generated] ' + prompt});
                     saveConversationToPhone(currentConversationId, currentMessages, currentMessages[0]?.content?.slice(0, 30) || 'New Chat');
                 } else {
-                    addMessageToUI('nexus', '[FAILED] ' + data.error);
+                    addMessageToUI('nexus', '❌ [FAILED] ' + (data.error || 'Unknown error'));
                 }
-                modeIndicator.textContent = '🎨 Image';
+                modeIndicator.textContent = '💬 Chat';
             } catch (e) {
                 removeTypingIndicator();
-                addMessageToUI('nexus', '[ERROR] Generation failed');
+                addMessageToUI('nexus', '❌ [ERROR] Generation failed: ' + e.message);
+                modeIndicator.textContent = '💬 Chat';
             }
+            
+            chatContainer.scrollTop = chatContainer.scrollHeight;
         }
 
+        // Handle Enter key in modal
+        document.getElementById('gen-prompt').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                generateImage();
+            }
+        });
+
+        // Close modal when clicking outside
+        generateModal.addEventListener('click', (e) => {
+            if (e.target === generateModal) {
+                closeGenerateModal();
+            }
+        });
+
+        // Initialize
         newChat();
         renderChatList();
     </script>
