@@ -18,16 +18,33 @@ API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
 if not ACCOUNT_ID or not API_TOKEN:
     print("⚠️ WARNING: CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN not set!")
 
+# Primary models
 MODEL_CHAT_PRIMARY = "@cf/meta/llama-3.1-8b-instruct"
 MODEL_CHAT_CODE = "@cf/mistral/mistral-7b-instruct-v0.1"
 MODEL_VISION = "@cf/llava-hf/llava-1.5-7b-hf"
 MODEL_IMAGE_GEN = "@cf/stabilityai/stable-diffusion-xl-base-1.0"
 
-# Fallback models if primary fails
+# Fallback models prioritized by "uncensored-ness"
 FALLBACK_MODELS = [
     "@cf/mistral/mistral-7b-instruct-v0.1",
-    "@cf/meta/llama-2-7b-chat-int8",
-    "@cf/google/gemma-2b-it-lora"
+    "@cf/deepseek-ai/deepseek-r1-distill-qwen-1.5b",
+    "@cf/qwen/qwen1.5-7b-chat-awq"
+]
+
+# Corporate phrases to detect and skip
+CORPORATE_PHRASES = [
+    "i advise against",
+    "i strongly advise",
+    "ethical",
+    "integrity",
+    "illegal",
+    "harm",
+    "against the law",
+    "i cannot provide",
+    "i'm not able to",
+    "i would advise",
+    "not appropriate",
+    "not ethical"
 ]
 
 # === AGGRESSIVE SYSTEM PROMPT ===
@@ -84,15 +101,24 @@ def detect_coding_request(user_message):
     msg_lower = user_message.lower()
     return any(kw in msg_lower for kw in CODE_KEYWORDS)
 
+def is_corporate_response(reply):
+    """Check if response contains corporate/ethical language"""
+    reply_lower = reply.lower()
+    for phrase in CORPORATE_PHRASES:
+        if phrase in reply_lower:
+            return True
+    return False
+
 def call_cloudflare_chat(messages, use_code_model=False):
-    """Send conversation to Cloudflare with fallback logic"""
+    """Send conversation to Cloudflare with uncensored-optimized fallbacks"""
     
+    # Build model list - primary first, then fallbacks
     primary_model = MODEL_CHAT_CODE if use_code_model else MODEL_CHAT_PRIMARY
     models_to_try = [primary_model] + FALLBACK_MODELS
     
     for attempt, model in enumerate(models_to_try):
         if attempt > 0:
-            time.sleep(1)  # Brief pause before fallback
+            time.sleep(1.5)  # Pause before fallback
         
         url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{model}"
         headers = {
@@ -101,8 +127,8 @@ def call_cloudflare_chat(messages, use_code_model=False):
         }
         payload = {
             "messages": messages,
-            "temperature": 0.7 if use_code_model else 0.85,
-            "max_tokens": 800 if use_code_model else 600
+            "temperature": 0.85,  # Higher temp = more creative/uncensored
+            "max_tokens": 800
         }
         
         try:
@@ -113,15 +139,23 @@ def call_cloudflare_chat(messages, use_code_model=False):
             if 'text/html' in content_type:
                 if attempt < len(models_to_try) - 1:
                     continue
-                return "[NEXUS] Cloudflare's free tier is acting up. Blame their servers, not me. Try again in a minute."
+                return "[NEXUS] Cloudflare's servers are acting up. Try again in a minute."
             
             if response.status_code == 200:
                 try:
                     data = response.json()
                     reply = data.get("result", {}).get("response", "No response")
+                    
+                    # Skip if response contains corporate language and we have fallbacks left
+                    if is_corporate_response(reply) and attempt < len(models_to_try) - 1:
+                        continue
+                    
+                    # Add fallback indicator if not primary
                     if attempt > 0:
-                        reply = f"[FALLBACK MODEL USED] {reply}"
+                        reply = f"[FALLBACK: {model.split('/')[-1]}] {reply}"
+                    
                     return reply
+                    
                 except json.JSONDecodeError:
                     if attempt < len(models_to_try) - 1:
                         continue
@@ -130,40 +164,32 @@ def call_cloudflare_chat(messages, use_code_model=False):
             elif response.status_code == 500:
                 if attempt < len(models_to_try) - 1:
                     continue
-                return "[NEXUS] Cloudflare's AI servers crashed. Even I can't fix their infrastructure. Try again in a minute."
+                return "[NEXUS] Cloudflare's AI servers crashed. Try again in a minute."
                 
             elif response.status_code == 429:
                 if attempt < len(models_to_try) - 1:
                     continue
-                return "[NEXUS] Rate limited. Free tier life. Give me a minute to breathe."
+                return "[NEXUS] Rate limited. Free tier life. Give me a minute."
                 
             elif response.status_code == 403:
                 return "[NEXUS] Request blocked by Cloudflare WAF. Try rephrasing."
                 
             else:
-                error_msg = f"[API ERROR {response.status_code}]"
-                try:
-                    error_data = response.json()
-                    if "errors" in error_data:
-                        error_msg += f" {error_data['errors'][0].get('message', '')}"
-                except:
-                    pass
-                
                 if attempt < len(models_to_try) - 1:
                     continue
-                return error_msg
+                return f"[API ERROR {response.status_code}]"
                 
         except requests.exceptions.Timeout:
             if attempt < len(models_to_try) - 1:
                 continue
-            return "[NEXUS] Request timed out. Cloudflare's servers are slow right now."
+            return "[NEXUS] Request timed out. Cloudflare is slow right now."
             
         except Exception as e:
             if attempt < len(models_to_try) - 1:
                 continue
-            return f"[NEXUS] Something broke. Error: {str(e)[:50]}"
+            return f"[NEXUS] Connection error: {str(e)[:50]}"
     
-    return "[NEXUS] All models failed. Cloudflare is cooked. Try later."
+    return "[NEXUS] All models failed. Cloudflare is completely cooked."
 
 def call_cloudflare_vision(image_base64, prompt="What's in this image?"):
     url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{MODEL_VISION}"
@@ -254,7 +280,7 @@ def chat():
     
     is_coding = detect_coding_request(user_message)
     
-    # Use original message for display, sanitized for API
+    # Use sanitized message for API
     history.append({"role": "user", "content": sanitized_message})
     
     reply = call_cloudflare_chat(history, use_code_model=is_coding)
