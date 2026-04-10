@@ -8,6 +8,14 @@ from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 import secrets
 
+# Try to import PIL for placeholder images
+try:
+    from PIL import Image, ImageDraw
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    print("⚠️ PIL not installed. Placeholder images will not work.")
+
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
 CORS(app)
@@ -167,7 +175,7 @@ def call_cloudflare_chat(messages, use_code_model=False):
 def call_cloudflare_vision(image_base64, prompt="What's in this image?"):
     """
     Fixed vision using byte array instead of base64.
-    Cloudflare's vision model expects raw bytes, not base64 string [citation:2]
+    Cloudflare's vision model expects raw bytes, not base64 string
     """
     # Clean the base64 string
     if ',' in image_base64:
@@ -176,7 +184,7 @@ def call_cloudflare_vision(image_base64, prompt="What's in this image?"):
     try:
         # Decode base64 to bytes
         image_bytes = base64.b64decode(image_base64)
-        # Convert to list of integers (what Cloudflare expects) [citation:2]
+        # Convert to list of integers (what Cloudflare expects)
         image_array = list(bytes(image_bytes))
         
         url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{MODEL_VISION}"
@@ -196,9 +204,25 @@ def call_cloudflare_vision(image_base64, prompt="What's in this image?"):
         
         if response.status_code == 200:
             data = response.json()
-            return data.get("result", {}).get("response", "No description")
+            return data.get("result", {}).get("description", "No description")
         
         print(f"[VISION ERROR] Status: {response.status_code}")
+        
+        # Try alternative format if first fails
+        payload_alt = {
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "image", "image": image_array},
+                    {"type": "text", "text": prompt}
+                ]}
+            ]
+        }
+        
+        response_alt = requests.post(url, headers=headers, json=payload_alt, timeout=60)
+        if response_alt.status_code == 200:
+            data = response_alt.json()
+            return data.get("result", {}).get("response", "No description")
+        
         return f"[VISION ERROR {response.status_code}] Image analysis failed."
         
     except base64.binascii.Error as e:
@@ -208,34 +232,145 @@ def call_cloudflare_vision(image_base64, prompt="What's in this image?"):
         print(f"[VISION EXCEPTION] {str(e)[:100]}")
         return f"[VISION ERROR] {str(e)[:100]}"
 
-def call_pollinations_image(prompt):
+# === IMAGE GENERATION (WITH MULTI-LAYER FALLBACK) ===
+
+def call_pollinations_image_with_retry(prompt, max_retries=2):
     """
-    Free image generation using Pollinations.ai.
-    No API key required, produces more realistic images than base SDXL.
+    Attempts to generate an image with Pollinations.ai multiple times.
     """
+    for attempt in range(max_retries):
+        try:
+            encoded_prompt = requests.utils.quote(prompt)
+            url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
+            
+            print(f"[POLLINATIONS] Attempt {attempt+1}/{max_retries}: Generating '{prompt[:50]}...'")
+            response = requests.get(url, timeout=90)
+            
+            if response.status_code == 200 and len(response.content) > 1000:
+                print(f"[POLLINATIONS SUCCESS] Image size: {len(response.content)} bytes")
+                return {
+                    "success": True,
+                    "image_base64": base64.b64encode(response.content).decode('utf-8'),
+                    "source": "pollinations"
+                }
+            else:
+                print(f"[POLLINATIONS] Attempt {attempt+1} failed. Status: {response.status_code}")
+                
+        except Exception as e:
+            print(f"[POLLINATIONS] Attempt {attempt+1} error: {str(e)[:50]}")
+            
+        if attempt < max_retries - 1:
+            time.sleep(2)
+            
+    return {"success": False, "error": "Pollinations.ai failed after multiple attempts"}
+
+def call_cloudflare_image_fallback(prompt):
+    """
+    Fallback image generation using Cloudflare's Flux model.
+    """
+    if not ACCOUNT_ID or not API_TOKEN:
+        return {"success": False, "error": "Cloudflare credentials not configured"}
+        
     try:
-        # Pollinations.ai free endpoint
-        encoded_prompt = requests.utils.quote(prompt)
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true"
+        url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+        headers = {"Authorization": f"Bearer {API_TOKEN}"}
         
-        print(f"[POLLINATIONS] Generating: {prompt[:50]}...")
+        payload = {
+            "prompt": prompt,
+            "num_steps": 4
+        }
         
-        response = requests.get(url, timeout=90)
+        print(f"[CLOUDFLARE FLUX] Generating '{prompt[:50]}...'")
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
         
         if response.status_code == 200 and len(response.content) > 1000:
-            print(f"[POLLINATIONS SUCCESS] Image size: {len(response.content)} bytes")
+            print(f"[CLOUDFLARE FLUX SUCCESS] Image size: {len(response.content)} bytes")
             return {
                 "success": True,
                 "image_base64": base64.b64encode(response.content).decode('utf-8'),
-                "source": "pollinations"
+                "source": "cloudflare-flux"
             }
         else:
-            print(f"[POLLINATIONS ERROR] Status: {response.status_code}")
-            return {"success": False, "error": "Pollinations.ai generation failed"}
+            print(f"[CLOUDFLARE FLUX] Failed. Status: {response.status_code}")
+            return {"success": False, "error": f"Cloudflare returned {response.status_code}"}
             
     except Exception as e:
-        print(f"[POLLINATIONS EXCEPTION] {str(e)[:50]}")
+        print(f"[CLOUDFLARE FLUX] Error: {str(e)[:50]}")
         return {"success": False, "error": str(e)[:100]}
+
+def call_stability_image_fallback(prompt):
+    """
+    Try Stable Diffusion via Cloudflare as another fallback.
+    """
+    if not ACCOUNT_ID or not API_TOKEN:
+        return {"success": False, "error": "Cloudflare credentials not configured"}
+        
+    try:
+        url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/stabilityai/stable-diffusion-xl-base-1.0"
+        headers = {"Authorization": f"Bearer {API_TOKEN}"}
+        
+        payload = {
+            "prompt": prompt,
+            "num_steps": 20,
+            "width": 512,
+            "height": 512
+        }
+        
+        print(f"[CLOUDFLARE SDXL] Generating '{prompt[:50]}...'")
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+        
+        if response.status_code == 200 and len(response.content) > 1000:
+            print(f"[CLOUDFLARE SDXL SUCCESS] Image size: {len(response.content)} bytes")
+            return {
+                "success": True,
+                "image_base64": base64.b64encode(response.content).decode('utf-8'),
+                "source": "cloudflare-sdxl"
+            }
+        else:
+            return {"success": False, "error": f"SDXL returned {response.status_code}"}
+            
+    except Exception as e:
+        return {"success": False, "error": str(e)[:100]}
+
+def get_placeholder_image():
+    """
+    Returns a simple placeholder image as a last resort.
+    """
+    if not PIL_AVAILABLE:
+        # Return a tiny 1x1 pixel if PIL not available
+        tiny_pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        return {
+            "success": True,
+            "image_base64": tiny_pixel,
+            "source": "placeholder"
+        }
+    
+    try:
+        img = Image.new('RGB', (512, 512), color=(20, 20, 20))
+        draw = ImageDraw.Draw(img)
+        
+        # Draw a simple border
+        draw.rectangle([10, 10, 502, 502], outline=(0, 255, 65), width=2)
+        
+        # Add text
+        text_lines = ["Image Generation", "Temporarily Unavailable", "", "Try again in a moment"]
+        y_position = 200
+        for line in text_lines:
+            draw.text((256, y_position), line, fill=(0, 255, 65), anchor="mm")
+            y_position += 30
+        
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        
+        return {
+            "success": True,
+            "image_base64": img_base64,
+            "source": "placeholder"
+        }
+    except Exception as e:
+        print(f"[PLACEHOLDER ERROR] {str(e)}")
+        return {"success": False, "error": "Placeholder generation failed"}
 
 # === ROUTES ===
 
@@ -248,10 +383,19 @@ def home():
         html_content = """
         <!DOCTYPE html>
         <html>
-        <head><title>NEXUS AI</title></head>
-        <body style="background:#0a0a0a;color:#00ff41;font-family:monospace;padding:20px;">
+        <head>
+            <title>NEXUS AI</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body { background: #0a0a0a; color: #00ff41; font-family: monospace; padding: 20px; }
+                h1 { color: #00ff41; }
+                .warning { color: #ff4444; }
+            </style>
+        </head>
+        <body>
             <h1>⚡ NEXUS AI</h1>
             <p>Backend is live.</p>
+            <p class="warning">⚠️ templates/index.html is missing. Upload the frontend file.</p>
         </body>
         </html>
         """
@@ -309,31 +453,47 @@ def vision():
 
 @app.route('/generate', methods=['POST'])
 def generate_image():
-    """Generate image using Pollinations.ai (free, realistic)"""
+    """Generate image with multiple fallback options"""
     data = request.get_json()
     if not data:
         return jsonify({"error": "No JSON payload"}), 400
     
     prompt = data.get('prompt', '').strip()
-    negative_prompt = data.get('negative_prompt', '')
     
     if not prompt:
         return jsonify({"error": "No prompt provided"}), 400
     
-    # Use Pollinations.ai for realistic images
-    result = call_pollinations_image(prompt)
+    print(f"[GENERATE] Starting image generation for: {prompt[:50]}...")
+    
+    # Try Pollinations.ai first (with retries)
+    result = call_pollinations_image_with_retry(prompt)
+    
+    # If Pollinations fails, try Cloudflare Flux
+    if not result.get("success"):
+        print("[GENERATE] Pollinations failed, trying Cloudflare Flux...")
+        result = call_cloudflare_image_fallback(prompt)
+    
+    # If Flux fails, try Cloudflare SDXL
+    if not result.get("success"):
+        print("[GENERATE] Flux failed, trying Cloudflare SDXL...")
+        result = call_stability_image_fallback(prompt)
+    
+    # If all fail, return a placeholder image
+    if not result.get("success"):
+        print("[GENERATE] All external services failed. Returning placeholder.")
+        result = get_placeholder_image()
     
     if result.get("success"):
         return jsonify({
             "success": True,
             "image_base64": result["image_base64"],
             "prompt": prompt,
-            "source": result.get("source", "pollinations")
+            "source": result.get("source", "unknown")
         })
     else:
         return jsonify({
             "success": False,
-            "error": result.get("error", "Image generation failed")
+            "error": result.get("error", "All image generation methods failed")
         }), 500
 
 @app.route('/health', methods=['GET'])
@@ -341,6 +501,7 @@ def health():
     return jsonify({
         "status": "healthy",
         "credentials_configured": bool(ACCOUNT_ID and API_TOKEN),
+        "pil_available": PIL_AVAILABLE,
         "timestamp": time.time()
     })
 
