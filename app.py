@@ -22,6 +22,7 @@ if not ACCOUNT_ID or not API_TOKEN:
 MODEL_CHAT_PRIMARY = "@cf/meta/llama-3.1-8b-instruct"
 MODEL_CHAT_CODE = "@cf/mistral/mistral-7b-instruct-v0.1"
 MODEL_VISION = "@cf/llava-hf/llava-1.5-7b-hf"
+MODEL_VISION_FALLBACK = "@cf/unum/uform-gen2-qwen-500m"
 MODEL_IMAGE_GEN = "@cf/stabilityai/stable-diffusion-xl-base-1.0"
 
 # Fallback models prioritized by "uncensored-ness"
@@ -112,7 +113,6 @@ def is_corporate_response(reply):
 def call_cloudflare_chat(messages, use_code_model=False):
     """Send conversation to Cloudflare with uncensored-optimized fallbacks"""
     
-    # Build model list - primary first, then fallbacks
     primary_model = MODEL_CHAT_CODE if use_code_model else MODEL_CHAT_PRIMARY
     models_to_try = [primary_model] + FALLBACK_MODELS
     
@@ -189,55 +189,81 @@ def call_cloudflare_chat(messages, use_code_model=False):
     return "[NEXUS] All models failed. Cloudflare is completely cooked."
 
 def call_cloudflare_vision(image_base64, prompt="What's in this image?"):
-    """Analyze image using LLaVA vision model with proper format"""
-    url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{MODEL_VISION}"
-    headers = {"Authorization": f"Bearer {API_TOKEN}", "Content-Type": "application/json"}
+    """Analyze image with fallback models"""
+    
+    models_to_try = [MODEL_VISION, MODEL_VISION_FALLBACK]
     
     # Clean the base64 string
     if ',' in image_base64:
         image_base64 = image_base64.split(',', 1)[1]
     
-    payload = {
-        "image": [image_base64],
-        "prompt": prompt,
-        "max_tokens": 500
-    }
+    # Ensure proper base64 padding
+    missing_padding = len(image_base64) % 4
+    if missing_padding:
+        image_base64 += '=' * (4 - missing_padding)
     
     print(f"[VISION DEBUG] Prompt: {prompt[:50]}...")
     print(f"[VISION DEBUG] Image length: {len(image_base64)} chars")
     
+    for attempt, model in enumerate(models_to_try):
+        url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{model}"
+        headers = {"Authorization": f"Bearer {API_TOKEN}", "Content-Type": "application/json"}
+        
+        payload = {
+            "image": [image_base64],
+            "prompt": prompt,
+            "max_tokens": 500
+        }
+        
+        print(f"[VISION DEBUG] Trying model: {model}")
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            content_type = response.headers.get('Content-Type', '')
+            
+            print(f"[VISION DEBUG] Status: {response.status_code}")
+            
+            if 'text/html' in content_type:
+                continue
+            
+            if response.status_code == 200:
+                data = response.json()
+                reply = data.get("result", {}).get("response", "No description")
+                if attempt > 0:
+                    reply = f"[FALLBACK VISION] {reply}"
+                return reply
+            
+            error_detail = response.text[:200]
+            print(f"[VISION ERROR] Model {model}: {error_detail}")
+            
+        except Exception as e:
+            print(f"[VISION EXCEPTION] Model {model}: {str(e)[:50]}")
+    
+    return "[VISION ERROR] Image format not supported. Try a different image (JPEG or PNG under 1MB)."
+
+def call_pollinations_image(prompt):
+    """Free fallback image generation using Pollinations.ai"""
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=60)
-        content_type = response.headers.get('Content-Type', '')
+        encoded_prompt = requests.utils.quote(prompt)
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=512&height=512&nologo=true"
         
-        print(f"[VISION DEBUG] Status: {response.status_code}")
+        print(f"[POLLINATIONS DEBUG] URL: {url[:100]}...")
         
-        if 'text/html' in content_type:
-            return f"[VISION ERROR] Service unavailable. Status: {response.status_code}"
+        response = requests.get(url, timeout=60)
         
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("result", {}).get("response", "No description")
-        
-        error_detail = response.text[:200]
-        print(f"[VISION ERROR] Status: {response.status_code}, Detail: {error_detail}")
-        
-        if response.status_code == 400:
-            try:
-                error_json = response.json()
-                error_msg = error_json.get('errors', [{}])[0].get('message', 'Invalid input format')
-                return f"[VISION ERROR 400] {error_msg}"
-            except:
-                return f"[VISION ERROR 400] Invalid image format or size. Try a smaller image."
-        
-        return f"[VISION ERROR {response.status_code}]"
-        
+        if response.status_code == 200 and len(response.content) > 100:
+            print(f"[POLLINATIONS SUCCESS] Image size: {len(response.content)} bytes")
+            return {"success": True, "image_base64": base64.b64encode(response.content).decode('utf-8')}
+        else:
+            print(f"[POLLINATIONS ERROR] Status: {response.status_code}, Size: {len(response.content)}")
+            
     except Exception as e:
-        print(f"[VISION EXCEPTION] {str(e)}")
-        return f"[VISION ERROR] {str(e)[:100]}"
+        print(f"[POLLINATIONS EXCEPTION] {str(e)[:50]}")
+    
+    return {"success": False, "error": "Pollinations.ai failed"}
 
 def call_cloudflare_image_generation(prompt, negative_prompt=""):
-    """Generate image using Stable Diffusion XL with proper error handling"""
+    """Generate image using Stable Diffusion XL with Pollinations fallback"""
     url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{MODEL_IMAGE_GEN}"
     headers = {"Authorization": f"Bearer {API_TOKEN}"}
     
@@ -256,35 +282,39 @@ def call_cloudflare_image_generation(prompt, negative_prompt=""):
         content_type = response.headers.get('Content-Type', '')
         
         print(f"[IMAGE GEN DEBUG] Status: {response.status_code}")
-        print(f"[IMAGE GEN DEBUG] Content-Type: {content_type}")
         
         if 'text/html' in content_type:
-            return {"success": False, "error": f"Service unavailable. Status: {response.status_code}"}
+            print("[IMAGE GEN] Cloudflare failed, trying Pollinations.ai...")
+            return call_pollinations_image(prompt)
         
         if response.status_code == 200:
             if len(response.content) < 100:
-                print(f"[IMAGE GEN WARNING] Response too small: {len(response.content)} bytes")
-                return {"success": False, "error": "Generated image is empty or corrupted"}
+                print("[IMAGE GEN] Response too small, trying Pollinations.ai...")
+                return call_pollinations_image(prompt)
             
             image_base64 = base64.b64encode(response.content).decode('utf-8')
             print(f"[IMAGE GEN SUCCESS] Image size: {len(response.content)} bytes")
-            return {"success": True, "image_base64": image_base64}
+            return {"success": True, "image_base64": image_base64, "source": "cloudflare"}
         
-        error_detail = response.text[:300]
-        print(f"[IMAGE GEN ERROR] Status: {response.status_code}, Detail: {error_detail}")
+        print(f"[IMAGE GEN ERROR] Status: {response.status_code}")
         
         if response.status_code == 400:
-            return {"success": False, "error": "Invalid prompt or parameters. Try a different prompt."}
+            return {"success": False, "error": "Invalid prompt or parameters."}
         elif response.status_code == 429:
-            return {"success": False, "error": "Daily quota exceeded. 250 steps/day limit reached. Resets at UTC midnight."}
+            print("[IMAGE GEN] Rate limited, trying Pollinations.ai...")
+            return call_pollinations_image(prompt)
         elif response.status_code == 500:
-            return {"success": False, "error": "Cloudflare AI servers are having issues. Try again later."}
+            print("[IMAGE GEN] Server error, trying Pollinations.ai...")
+            return call_pollinations_image(prompt)
         
-        return {"success": False, "error": f"API error {response.status_code}"}
+        # Try Pollinations as fallback for any error
+        print("[IMAGE GEN] Trying Pollinations.ai fallback...")
+        return call_pollinations_image(prompt)
         
     except Exception as e:
-        print(f"[IMAGE GEN EXCEPTION] {str(e)}")
-        return {"success": False, "error": str(e)[:100]}
+        print(f"[IMAGE GEN EXCEPTION] {str(e)[:50]}")
+        print("[IMAGE GEN] Exception occurred, trying Pollinations.ai...")
+        return call_pollinations_image(prompt)
 
 # === ROUTES ===
 
@@ -368,9 +398,6 @@ def vision():
 
 @app.route('/generate', methods=['POST'])
 def generate_image():
-    if not ACCOUNT_ID or not API_TOKEN:
-        return jsonify({"error": "Server not configured with API credentials"}), 500
-    
     data = request.get_json()
     if not data:
         return jsonify({"error": "No JSON payload"}), 400
@@ -389,13 +416,12 @@ def generate_image():
             "success": True,
             "image_base64": result["image_base64"],
             "prompt": prompt,
-            "model_used": MODEL_IMAGE_GEN
+            "source": result.get("source", "cloudflare")
         })
     else:
         return jsonify({
             "success": False,
-            "error": result.get("error", "Unknown error"),
-            "model_used": MODEL_IMAGE_GEN
+            "error": result.get("error", "Unknown error")
         }), 500
 
 @app.route('/health', methods=['GET'])
@@ -411,6 +437,7 @@ def check_limits():
     """Quick test to see if vision and image gen are working"""
     results = {
         "vision_model": MODEL_VISION,
+        "vision_fallback": MODEL_VISION_FALLBACK,
         "image_gen_model": MODEL_IMAGE_GEN,
         "account_configured": bool(ACCOUNT_ID and API_TOKEN)
     }
@@ -420,6 +447,11 @@ def check_limits():
     
     vision_result = call_cloudflare_vision(tiny_image, "What is this?")
     results["vision_test"] = "PASSED" if "ERROR" not in vision_result else vision_result[:100]
+    
+    # Test image gen with simple prompt
+    gen_result = call_cloudflare_image_generation("a red circle", "")
+    results["image_gen_test"] = "PASSED" if gen_result.get("success") else gen_result.get("error", "Failed")[:100]
+    results["image_gen_source"] = gen_result.get("source", "none")
     
     return jsonify(results)
 
