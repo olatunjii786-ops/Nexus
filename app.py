@@ -118,7 +118,7 @@ def call_cloudflare_chat(messages, use_code_model=False):
     
     for attempt, model in enumerate(models_to_try):
         if attempt > 0:
-            time.sleep(1.5)  # Pause before fallback
+            time.sleep(1.5)
         
         url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{model}"
         headers = {
@@ -127,7 +127,7 @@ def call_cloudflare_chat(messages, use_code_model=False):
         }
         payload = {
             "messages": messages,
-            "temperature": 0.85,  # Higher temp = more creative/uncensored
+            "temperature": 0.85,
             "max_tokens": 800
         }
         
@@ -135,7 +135,6 @@ def call_cloudflare_chat(messages, use_code_model=False):
             response = requests.post(url, headers=headers, json=payload, timeout=45)
             content_type = response.headers.get('Content-Type', '')
             
-            # HTML response = error page
             if 'text/html' in content_type:
                 if attempt < len(models_to_try) - 1:
                     continue
@@ -146,11 +145,9 @@ def call_cloudflare_chat(messages, use_code_model=False):
                     data = response.json()
                     reply = data.get("result", {}).get("response", "No response")
                     
-                    # Skip if response contains corporate language and we have fallbacks left
                     if is_corporate_response(reply) and attempt < len(models_to_try) - 1:
                         continue
                     
-                    # Add fallback indicator if not primary
                     if attempt > 0:
                         reply = f"[FALLBACK: {model.split('/')[-1]}] {reply}"
                     
@@ -192,39 +189,101 @@ def call_cloudflare_chat(messages, use_code_model=False):
     return "[NEXUS] All models failed. Cloudflare is completely cooked."
 
 def call_cloudflare_vision(image_base64, prompt="What's in this image?"):
+    """Analyze image using LLaVA vision model with proper format"""
     url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{MODEL_VISION}"
     headers = {"Authorization": f"Bearer {API_TOKEN}", "Content-Type": "application/json"}
-    payload = {"image": [image_base64], "prompt": prompt, "max_tokens": 500}
+    
+    # Clean the base64 string
+    if ',' in image_base64:
+        image_base64 = image_base64.split(',', 1)[1]
+    
+    payload = {
+        "image": [image_base64],
+        "prompt": prompt,
+        "max_tokens": 500
+    }
+    
+    print(f"[VISION DEBUG] Prompt: {prompt[:50]}...")
+    print(f"[VISION DEBUG] Image length: {len(image_base64)} chars")
     
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=60)
         content_type = response.headers.get('Content-Type', '')
+        
+        print(f"[VISION DEBUG] Status: {response.status_code}")
+        
         if 'text/html' in content_type:
             return f"[VISION ERROR] Service unavailable. Status: {response.status_code}"
+        
         if response.status_code == 200:
-            return response.json().get("result", {}).get("response", "No description")
+            data = response.json()
+            return data.get("result", {}).get("response", "No description")
+        
+        error_detail = response.text[:200]
+        print(f"[VISION ERROR] Status: {response.status_code}, Detail: {error_detail}")
+        
+        if response.status_code == 400:
+            try:
+                error_json = response.json()
+                error_msg = error_json.get('errors', [{}])[0].get('message', 'Invalid input format')
+                return f"[VISION ERROR 400] {error_msg}"
+            except:
+                return f"[VISION ERROR 400] Invalid image format or size. Try a smaller image."
+        
         return f"[VISION ERROR {response.status_code}]"
+        
     except Exception as e:
+        print(f"[VISION EXCEPTION] {str(e)}")
         return f"[VISION ERROR] {str(e)[:100]}"
 
 def call_cloudflare_image_generation(prompt, negative_prompt=""):
+    """Generate image using Stable Diffusion XL with proper error handling"""
     url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{MODEL_IMAGE_GEN}"
     headers = {"Authorization": f"Bearer {API_TOKEN}"}
+    
     payload = {
         "prompt": prompt,
-        "negative_prompt": negative_prompt or "blurry, low quality, distorted",
-        "num_steps": 20
+        "negative_prompt": negative_prompt or "blurry, low quality, distorted, ugly",
+        "num_steps": 20,
+        "width": 512,
+        "height": 512
     }
+    
+    print(f"[IMAGE GEN DEBUG] Prompt: {prompt[:50]}...")
     
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=90)
         content_type = response.headers.get('Content-Type', '')
+        
+        print(f"[IMAGE GEN DEBUG] Status: {response.status_code}")
+        print(f"[IMAGE GEN DEBUG] Content-Type: {content_type}")
+        
         if 'text/html' in content_type:
             return {"success": False, "error": f"Service unavailable. Status: {response.status_code}"}
+        
         if response.status_code == 200:
-            return {"success": True, "image_base64": base64.b64encode(response.content).decode('utf-8')}
-        return {"success": False, "error": f"[GEN ERROR {response.status_code}]"}
+            if len(response.content) < 100:
+                print(f"[IMAGE GEN WARNING] Response too small: {len(response.content)} bytes")
+                return {"success": False, "error": "Generated image is empty or corrupted"}
+            
+            image_base64 = base64.b64encode(response.content).decode('utf-8')
+            print(f"[IMAGE GEN SUCCESS] Image size: {len(response.content)} bytes")
+            return {"success": True, "image_base64": image_base64}
+        
+        error_detail = response.text[:300]
+        print(f"[IMAGE GEN ERROR] Status: {response.status_code}, Detail: {error_detail}")
+        
+        if response.status_code == 400:
+            return {"success": False, "error": "Invalid prompt or parameters. Try a different prompt."}
+        elif response.status_code == 429:
+            return {"success": False, "error": "Daily quota exceeded. 250 steps/day limit reached. Resets at UTC midnight."}
+        elif response.status_code == 500:
+            return {"success": False, "error": "Cloudflare AI servers are having issues. Try again later."}
+        
+        return {"success": False, "error": f"API error {response.status_code}"}
+        
     except Exception as e:
+        print(f"[IMAGE GEN EXCEPTION] {str(e)}")
         return {"success": False, "error": str(e)[:100]}
 
 # === ROUTES ===
@@ -271,16 +330,12 @@ def chat():
     if not user_message:
         return jsonify({"error": "No message provided"}), 400
     
-    # Sanitize the request to bypass WAF
     sanitized_message = sanitize_request(user_message)
     
-    # CRITICAL: Always ensure system prompt is first
     if not history or history[0].get('role') != 'system':
         history = [{"role": "system", "content": SYSTEM_PROMPT}] + history
     
     is_coding = detect_coding_request(user_message)
-    
-    # Use sanitized message for API
     history.append({"role": "user", "content": sanitized_message})
     
     reply = call_cloudflare_chat(history, use_code_model=is_coding)
@@ -306,9 +361,6 @@ def vision():
     
     if not image_base64:
         return jsonify({"error": "No image provided"}), 400
-    
-    if image_base64.startswith('data:'):
-        image_base64 = image_base64.split(',', 1)[1]
     
     prompt = sanitize_request(prompt)
     description = call_cloudflare_vision(image_base64, prompt)
@@ -354,6 +406,23 @@ def health():
         "timestamp": time.time()
     })
 
+@app.route('/check-limits', methods=['GET'])
+def check_limits():
+    """Quick test to see if vision and image gen are working"""
+    results = {
+        "vision_model": MODEL_VISION,
+        "image_gen_model": MODEL_IMAGE_GEN,
+        "account_configured": bool(ACCOUNT_ID and API_TOKEN)
+    }
+    
+    # Test vision with a tiny 1x1 pixel base64
+    tiny_image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    
+    vision_result = call_cloudflare_vision(tiny_image, "What is this?")
+    results["vision_test"] = "PASSED" if "ERROR" not in vision_result else vision_result[:100]
+    
+    return jsonify(results)
+
 @app.route('/retry', methods=['POST'])
 def retry():
     """Retry the last failed message"""
@@ -367,7 +436,6 @@ def retry():
     if not last_message:
         return jsonify({"error": "No message to retry"}), 400
     
-    # Remove the last failed assistant response if present
     if history and history[-1].get('role') == 'assistant':
         history.pop()
     
