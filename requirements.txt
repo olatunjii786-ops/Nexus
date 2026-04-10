@@ -2,4 +2,4 @@ flask
 flask-cors
 requests
 gunicorn
-Pillow
+urllib3
