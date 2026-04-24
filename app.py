@@ -22,9 +22,9 @@ CORS(app, origins=ALLOWED_ORIGINS)
 
 # === GOOGLE GEMINI CONFIG ===
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL_CHAT = "gemini-1.5-flash"
-GEMINI_MODEL_CODE = "gemini-1.5-flash"
-GEMINI_MODEL_VISION = "gemini-1.5-flash" #Supports vision
+GEMINI_MODEL_CHAT = "gemini-2.0-flash"
+GEMINI_MODEL_CODE = "gemini-2.0-flash"
+GEMINI_MODEL_VISION = "gemini-2.0-flash" #Supports vision
 
 # Pollinations for image generation (still the best free option)
 POLLINATIONS_URL = "https://image.pollinations.ai/prompt"
